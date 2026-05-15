@@ -1,6 +1,7 @@
 import pytest
 
 from tools.tlon_tool import (
+    TlonHttpError,
     TlonGroups,
     TlonHooks,
     TlonMessages,
@@ -62,6 +63,15 @@ class FakeTlonClient:
 
     async def scry(self, app, path, **_kwargs):
         self.scries.append({"app": app, "path": path})
+        if app == "groups" and path == "/v2/groups":
+            return {
+                "~host/group": {
+                    "meta": {"title": "Test Group"},
+                    "channels": {
+                        "chat/~host/test": {"meta": {"title": "General"}},
+                    },
+                }
+            }
         if app == "groups" and path.startswith("/v2/ui/groups/"):
             return self.group
         if app == "channels-server" and path == "/v0/hooks":
@@ -108,6 +118,7 @@ async def test_group_create_owned_creates_group_and_assigns_admin():
 
     assert result["success"] is True
     assert result["owner_ship"] == "~malmur-halmex"
+    assert result["admin_ships"] == ["~malmur-halmex"]
     assert client.threads[0]["desk"] == "groups"
     assert client.threads[0]["input_mark"] == "group-create-thread"
     assert client.threads[0]["body"]["guestList"] == ["~malmur-halmex"]
@@ -176,6 +187,71 @@ async def test_group_create_owned_creates_group_and_assigns_admin():
     )
     assert result["admin_assigned"] is True
     assert result["admin_assignment"]["promoted"] == ["~malmur-halmex"]
+
+@pytest.mark.asyncio
+async def test_group_create_with_admins_force_adds_admin_seats():
+    client = FakeTlonClient()
+    groups = TlonGroups(client)
+
+    result = await groups.handle(
+        "group_create_with_admins",
+        {
+            "title": "Hermes Group",
+            "ships": ["~malmur-halmex", "~nec"],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["admin_ships"] == ["~malmur-halmex", "~nec"]
+    assert client.threads[0]["body"]["guestList"] == ["~malmur-halmex", "~nec"]
+    for ship in ["~malmur-halmex", "~nec"]:
+        assert ship in result["admin_assignment"]["promoted"]
+        assert client.group["seats"][ship]["roles"] == ["admin"]
+
+
+@pytest.mark.asyncio
+async def test_group_info_resolves_tlon_url_channel_to_parent_group():
+    client = FakeTlonClient()
+    groups = TlonGroups(client)
+
+    result = await groups.handle(
+        "group_info",
+        {
+            "group_id": (
+                "https://host.tlon.network/apps/groups/Messages/Channel/ChannelRoot"
+                "?channelId=chat%2F~host%2Ftest&groupId=~host%2Fwrong"
+            ),
+        },
+    )
+
+    assert result["success"] is True
+    assert result["group_id"] == "~host/group"
+    assert result["channel_id"] == "chat/~host/test"
+    assert result["resolved_from"] == "channel_id"
+
+
+@pytest.mark.asyncio
+async def test_group_info_returns_candidates_instead_of_raising_404():
+    class NotFoundClient(FakeTlonClient):
+        async def scry(self, app, path, **kwargs):
+            if app == "groups" and path.startswith("/v2/ui/groups/"):
+                raise TlonHttpError(
+                    "not found",
+                    status=404,
+                    app=app,
+                    path=path,
+                )
+            return await super().scry(app, path, **kwargs)
+
+    client = NotFoundClient()
+    groups = TlonGroups(client)
+
+    result = await groups.handle("group_info", {"group_id": "~host/wrong"})
+
+    assert result["success"] is True
+    assert result["found"] is False
+    assert result["requested_group_id"] == "~host/wrong"
+    assert result["candidates"][0]["group_id"] == "~host/group"
 
 
 @pytest.mark.asyncio
