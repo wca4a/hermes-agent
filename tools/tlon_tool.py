@@ -847,11 +847,36 @@ class TlonChannels:
                 return _ok(action, mode=mode, channels=_filter_init_channels(init, mode))
             raise TlonToolError("channels_list mode must be all, groups, dms, or group_dms")
         if action == "channel_info":
-            channel_id = _required(args, "channel_id")
-            group_id = args.get("group_id")
+            channel_id = _normalize_channel_ref(_required(args, "channel_id"))
+            group_id = _normalize_group_ref(str(args.get("group_id") or ""))
             if group_id:
-                group = await self.client.scry("groups", f"/v2/ui/groups/{group_id}")
-                return _ok(action, channel_id=channel_id, group_id=group_id, channel=_find_channel(group, channel_id), group=group)
+                try:
+                    group = await self.client.scry("groups", f"/v2/ui/groups/{group_id}")
+                    return _ok(action, channel_id=channel_id, group_id=group_id, channel=_find_channel(group, channel_id), group=group)
+                except TlonHttpError as exc:
+                    if exc.status != 404:
+                        raise
+                    groups = await _groups_index(self.client)
+                    match = _find_group_in_groups(groups, channel_id)
+                    if match:
+                        resolved_group_id, group = match
+                        return _ok(
+                            action,
+                            channel_id=channel_id,
+                            group_id=resolved_group_id,
+                            requested_group_id=group_id,
+                            channel=_find_channel(group, channel_id),
+                            group=group,
+                            resolved_from="channel_id",
+                        )
+                    return _ok(
+                        action,
+                        found=False,
+                        channel_id=channel_id,
+                        requested_group_id=group_id,
+                        candidates=_candidate_groups(groups, group_id, channel_id),
+                        hint="Group not found for channel. Use one of the candidate group_id values.",
+                    )
             groups = await self.client.scry("groups", "/v2/groups")
             return _ok(action, channel_id=channel_id, match=_find_channel_in_groups(groups, channel_id))
         if action == "channel_create":
@@ -1906,6 +1931,8 @@ def _candidate_groups(groups: Any, requested_group_id: str = "", channel_id: str
     for group_id, group in _iter_group_items(groups):
         channels = _group_channel_ids(group)
         if channel_id and channel_id not in channels:
+            # Keep host matches as useful context even when the specific
+            # channel was not present in the local groups index.
             if requested_host and not group_id.startswith(f"{requested_host}/"):
                 continue
         elif requested_host and not group_id.startswith(f"{requested_host}/"):

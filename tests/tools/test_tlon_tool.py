@@ -189,6 +189,7 @@ async def test_group_create_owned_creates_group_and_assigns_admin():
     assert result["admin_assigned"] is True
     assert result["admin_assignment"]["promoted"] == ["~malmur-halmex"]
 
+
 @pytest.mark.asyncio
 async def test_group_create_with_admins_force_adds_admin_seats():
     client = FakeTlonClient()
