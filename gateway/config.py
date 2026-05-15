@@ -127,6 +127,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    TLON = "tlon"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -431,6 +432,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     ),
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
+    ),
+    Platform.TLON: lambda cfg: bool(
+        cfg.extra.get("ship_url") and cfg.extra.get("ship_name")
     ),
     Platform.DINGTALK: lambda cfg: bool(
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
@@ -941,6 +945,14 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # history_backfill: recover missed channel messages for shared sessions
+                # when require_mention is active.  Fetches messages between bot turns
+                # and prepends them to the user message for context.
+                if "history_backfill" in discord_cfg and not os.getenv("DISCORD_HISTORY_BACKFILL"):
+                    os.environ["DISCORD_HISTORY_BACKFILL"] = str(discord_cfg["history_backfill"]).lower()
+                hbl = discord_cfg.get("history_backfill_limit")
+                if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
+                    os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
                 # allow_mentions: granular control over what the bot can ping.
                 # Safe defaults (no @everyone/roles) are applied in the adapter;
                 # these YAML keys only override when set and let users opt back
@@ -1797,6 +1809,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
+
+    # Tlon (Urbit)
+    tlon_url = os.getenv("TLON_SHIP_URL")
+    tlon_name = os.getenv("TLON_SHIP_NAME")
+    tlon_code = os.getenv("TLON_SHIP_CODE")
+    if all([tlon_url, tlon_name, tlon_code]):
+        if Platform.TLON not in config.platforms:
+            config.platforms[Platform.TLON] = PlatformConfig()
+        config.platforms[Platform.TLON].enabled = True
+        config.platforms[Platform.TLON].extra.update({
+            "ship_url": tlon_url,
+            "ship_name": tlon_name,
+        })
+        tlon_home = os.getenv("TLON_HOME_CHANNEL")
+        if tlon_home:
+            config.platforms[Platform.TLON].home_channel = HomeChannel(
+                platform=Platform.TLON,
+                chat_id=tlon_home,
+                name=os.getenv("TLON_HOME_CHANNEL_NAME", "Home"),
+                thread_id=os.getenv("TLON_HOME_CHANNEL_THREAD_ID") or None,
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
